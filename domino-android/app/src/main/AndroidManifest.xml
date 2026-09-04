@@ -5,6 +5,7 @@
 
     <application
         android:allowBackup="true"
+        android:usesCleartextTraffic="true"
         android:label="Game Club"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
