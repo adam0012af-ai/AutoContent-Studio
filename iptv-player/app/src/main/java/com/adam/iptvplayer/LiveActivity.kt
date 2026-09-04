@@ -47,7 +47,13 @@ class LiveActivity : AppCompatActivity() {
 
     private fun load(){io.execute{try{val data=repo.items("live");runOnUiThread{all=data;filter();data.firstOrNull()?.let{select(it,false)}}}catch(_:Exception){runOnUiThread{Toast.makeText(this,"Unable to load live channels",Toast.LENGTH_LONG).show()}}}}
     private fun filter(){if(!::adapter.isInitialized)return;adapter.replace(all.filter{(category=="all"||it.categoryId==category)&&it.name.contains(search,true)})}
-    private fun select(i:IptvRepository.Item,play:Boolean){chosen=i;title.text=i.name;if(i.icon.isNullOrBlank())logo.setImageDrawable(null)else logo.load(i.icon){crossfade(true)};now.text="Now • Channel selected";next.text="Next • Guide data when available";if(play){previewPlayer?.release();previewPlayer=ExoPlayer.Builder(this).build().also{p->playerView.player=p;p.setMediaItem(MediaItem.fromUri(repo.streamUrl(i)));p.prepare();p.playWhenReady=true;p.volume=.35f}}}
+    private fun select(i:IptvRepository.Item,play:Boolean){
+        chosen=i;title.text=i.name
+        if(i.icon.isNullOrBlank())logo.setImageDrawable(null)else logo.load(i.icon){crossfade(true)}
+        now.text="Now • Loading guide…";next.text="Next • —"
+        io.execute{try{val guide=repo.shortEpg(i.id);runOnUiThread{if(chosen?.id==i.id){now.text="Now • ${guide.getOrNull(0)?.title?.ifBlank{"No guide data"}?:"No guide data"}";next.text="Next • ${guide.getOrNull(1)?.title?.ifBlank{"—"}?:"—"}"}}}catch(_:Exception){runOnUiThread{if(chosen?.id==i.id)now.text="Now • No guide data"}}}
+        if(play){previewPlayer?.release();previewPlayer=ExoPlayer.Builder(this).build().also{p->playerView.player=p;p.setMediaItem(MediaItem.fromUri(repo.streamUrl(i)));p.prepare();p.playWhenReady=true;p.volume=.35f}}
+    }
     private fun openFull(i:IptvRepository.Item){startActivity(Intent(this,PlayerActivity::class.java).putExtra("url",repo.streamUrl(i)).putExtra("title",i.name))}
     override fun onStop(){super.onStop();previewPlayer?.release();previewPlayer=null}
     override fun onDestroy(){super.onDestroy();io.shutdownNow()}
