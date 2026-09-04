@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.adam.iptvplayer"
         minSdk = 23
-        targetSdk = 35
+        targetSdk = 29
         versionCode = 1
         versionName = "1.0.0"
     }
