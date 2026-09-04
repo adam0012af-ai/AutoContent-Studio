@@ -91,7 +91,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(content,LinearLayout.LayoutParams(-1,0,1f));setContentView(root)
         var allItems:List<IptvRepository.Item> = emptyList(); var selectedCat="all"
         fun render(q:String="") { list.removeAllViews(); allItems.filter{ (selectedCat=="all"||it.categoryId==selectedCat) && it.name.contains(q,true)}.forEach{item-> list.addView(itemRow(item),LinearLayout.LayoutParams(-1,dp(66)).apply{bottomMargin=dp(7)}) } }
-        search.setOnKeyListener{_,key,event-> if(event.action==KeyEvent.ACTION_UP){render(search.text.toString()); false}else false}
+        search.setOnKeyListener{_,_,event-> if(event.action==KeyEvent.ACTION_UP){render(search.text.toString()); false}else false}
         io.execute {
             try { val categories=repo!!.categories(kind); allItems=repo!!.items(kind)
                 runOnUiThread {
@@ -133,7 +133,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun homeCard(title:String,sub:String,icon:String,action:()->Unit):View{val c=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.CENTER;setPadding(dp(12),dp(12),dp(12),dp(12));background=rounded(panel,20);isFocusable=true;setOnClickListener{action()}};c.addView(txt(icon,38,true,accent));c.addView(txt(title,20,true,Color.WHITE));c.addView(txt(sub,12,false,Color.GRAY));return c}
     private fun txt(s:String,size:Int,bold:Boolean,color:Int)=TextView(this).apply{text=s;textSize=size.toFloat();setTextColor(color);if(bold)typeface=Typeface.DEFAULT_BOLD}
-    private fun edit(hint:String,value:String,secret:Boolean)=EditText(this).apply{this.hint=hint;setHintTextColor(Color.GRAY);setTextColor(Color.WHITE);setText(value);singleLine=true;background=rounded(Color.rgb(22,39,51),12);setPadding(dp(16),0,dp(16),0);if(secret)inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD;layoutParams=LinearLayout.LayoutParams(-1,dp(52)).apply{topMargin=dp(10)}}
+    private fun edit(hint:String,value:String,secret:Boolean)=EditText(this).apply{this.hint=hint;setHintTextColor(Color.GRAY);setTextColor(Color.WHITE);setText(value);setSingleLine(true);background=rounded(Color.rgb(22,39,51),12);setPadding(dp(16),0,dp(16),0);if(secret)inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD;layoutParams=LinearLayout.LayoutParams(-1,dp(52)).apply{topMargin=dp(10)}}
     private fun button(s:String,color:Int)=Button(this).apply{text=s;setTextColor(Color.WHITE);textSize=13f;typeface=Typeface.DEFAULT_BOLD;background=rounded(color,12);isAllCaps=false;isFocusable=true}
     private fun rounded(color:Int,r:Int)=GradientDrawable().apply{setColor(color);cornerRadius=dp(r).toFloat()}
     private fun dp(v:Int)=(v*resources.displayMetrics.density).toInt()
