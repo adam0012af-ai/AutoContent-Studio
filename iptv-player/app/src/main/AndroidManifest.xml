@@ -6,6 +6,7 @@
         android:theme="@style/AppTheme"
         android:label="Adam IPTV">
         <activity android:name=".PlayerActivity" android:screenOrientation="landscape" android:configChanges="orientation|screenSize" />
+        <activity android:name=".LiveActivity" android:screenOrientation="landscape" android:configChanges="orientation|screenSize" />
         <activity android:name=".MainActivity" android:screenOrientation="landscape" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
