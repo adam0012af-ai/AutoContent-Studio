@@ -5,11 +5,13 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import android.util.Base64
 
 class IptvRepository(private val server: String, private val username: String, private val password: String) {
     data class Category(val id: String, val name: String)
     data class Item(val id: String, val name: String, val icon: String?, val extension: String?, val categoryId: String, val kind: String)
     data class Episode(val id: String, val title: String, val extension: String)
+    data class EpgEntry(val title: String, val description: String, val start: String, val end: String)
 
     private val base = server.trim().trimEnd('/')
     private fun enc(v: String) = URLEncoder.encode(v, "UTF-8")
@@ -47,6 +49,22 @@ class IptvRepository(private val server: String, private val username: String, p
         return out
     }
 
+    fun shortEpg(streamId: String): List<EpgEntry> {
+        val root = JSONObject(get(api("get_short_epg", "&stream_id=${enc(streamId)}&limit=2")))
+        val arr = root.optJSONArray("epg_listings") ?: return emptyList()
+        val out = ArrayList<EpgEntry>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            out += EpgEntry(
+                decodeMaybe(o.optString("title")),
+                decodeMaybe(o.optString("description")),
+                o.optString("start"),
+                o.optString("end")
+            )
+        }
+        return out
+    }
+
     fun episodes(seriesId: String): List<Episode> {
         val root = JSONObject(get(api("get_series_info", "&series_id=${enc(seriesId)}")))
         val eps = root.optJSONObject("episodes") ?: return emptyList()
@@ -71,10 +89,18 @@ class IptvRepository(private val server: String, private val username: String, p
 
     fun episodeUrl(ep: Episode): String = "$base/series/${enc(username)}/${enc(password)}/${ep.id}.${ep.extension}"
 
+    private fun decodeMaybe(v:String):String {
+        if(v.isBlank()) return ""
+        return try {
+            val decoded = String(Base64.decode(v, Base64.DEFAULT), Charsets.UTF_8)
+            if(decoded.any { it.isLetterOrDigit() }) decoded else v
+        } catch(_:Exception) { v }
+    }
+
     private fun get(address: String): String {
         val c = URL(address).openConnection() as HttpURLConnection
         c.connectTimeout = 12000; c.readTimeout = 20000
-        c.setRequestProperty("User-Agent", "AdamIPTV/1.0 Android")
+        c.setRequestProperty("User-Agent", "AdamIPTV/1.2 Android")
         try {
             val code = c.responseCode
             val stream = if (code in 200..299) c.inputStream else c.errorStream
