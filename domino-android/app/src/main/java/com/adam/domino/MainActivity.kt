@@ -2,422 +2,230 @@ package com.adam.domino
 
 import android.app.Activity
 import android.graphics.*
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.Window
 import android.view.WindowManager
-import android.widget.Toast
-import java.util.Collections
-import kotlin.math.min
+import android.widget.*
+import okhttp3.*
+import okio.ByteString
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
+    data class Tile(val a: Int, val b: Int)
+
+    private val client = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
+    private var socket: WebSocket? = null
+    private var playerId = ""
+    private var token = ""
+    private var roomId = ""
+    private var ownerId = ""
+    private var target = 101
+    private var coins = 0
+
+    private lateinit var status: TextView
+    private lateinit var identity: TextView
+    private lateinit var serverInput: EditText
+    private lateinit var nameInput: EditText
+    private lateinit var roomInput: EditText
+    private lateinit var stakeInput: EditText
+    private lateinit var targetButton: Button
+    private lateinit var startButton: Button
+    private lateinit var gameView: OnlineDominoView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
-        setContentView(DominoTableView(this))
+        buildUi()
     }
 
-    class DominoTableView(private val activity: MainActivity) : View(activity) {
-        data class Tile(val a: Int, val b: Int) {
-            fun matches(v: Int) = a == v || b == v
-            fun other(v: Int) = if (a == v) b else a
-        }
+    private fun buildUi() {
+        val prefs = getSharedPreferences("online", MODE_PRIVATE)
+        playerId = prefs.getString("playerId", "") ?: ""
+        token = prefs.getString("token", "") ?: ""
 
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(18, 10, 18, 10)
+            setBackgroundColor(Color.rgb(8, 16, 23))
+        }
+        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        identity = TextView(this).apply { setTextColor(Color.WHITE); textSize = 14f; text = if (playerId.isBlank()) "Player ID: --" else "Player ID: $playerId" }
+        status = TextView(this).apply { setTextColor(Color.rgb(238, 205, 114)); textSize = 14f; gravity = Gravity.END; text = "غير متصل" }
+        top.addView(identity, LinearLayout.LayoutParams(0, -2, 1f)); top.addView(status, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        serverInput = field("ws://192.168.1.2:8080").apply { setText(prefs.getString("server", "ws://192.168.1.2:8080")) }
+        nameInput = field("اسمك").apply { setText(prefs.getString("name", "Player")) }
+        roomInput = field("Room ID")
+        stakeInput = field("Coins").apply { setText("50"); inputType = 2 }
+        val connect = button("اتصال") { connect() }
+        val create = button("إنشاء روم") { createRoom() }
+        val join = button("دخول روم") { joinRoom() }
+        targetButton = button("101") { target = if (target == 101) 151 else 101; targetButton.text = target.toString() }
+        startButton = button("ابدأ") { send(JSONObject().put("type", "startMatch").put("roomId", roomId)) }
+        controls.addView(serverInput, LinearLayout.LayoutParams(0, 48, 1.7f))
+        controls.addView(nameInput, LinearLayout.LayoutParams(0, 48, 0.8f))
+        controls.addView(connect)
+        controls.addView(roomInput, LinearLayout.LayoutParams(0, 48, 0.8f))
+        controls.addView(stakeInput, LinearLayout.LayoutParams(0, 48, 0.55f))
+        controls.addView(targetButton)
+        controls.addView(create)
+        controls.addView(join)
+        controls.addView(startButton)
+
+        gameView = OnlineDominoView()
+        root.addView(top, LinearLayout.LayoutParams(-1, 42))
+        root.addView(controls, LinearLayout.LayoutParams(-1, 54))
+        root.addView(gameView, LinearLayout.LayoutParams(-1, 0, 1f))
+        setContentView(root)
+    }
+
+    private fun field(hintText: String) = EditText(this).apply {
+        hint = hintText; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE); textSize = 12f
+        setSingleLine(true); setBackgroundColor(Color.rgb(24, 34, 44)); setPadding(10, 0, 10, 0)
+    }
+    private fun button(label: String, action: () -> Unit) = Button(this).apply { text = label; textSize = 11f; setOnClickListener { action() } }
+
+    private fun connect() {
+        val url = serverInput.text.toString().trim()
+        if (!url.startsWith("ws://") && !url.startsWith("wss://")) { toast("اكتب عنوان ws:// أو wss://"); return }
+        getSharedPreferences("online", MODE_PRIVATE).edit().putString("server", url).putString("name", nameInput.text.toString()).apply()
+        status.text = "جاري الاتصال..."
+        socket?.close(1000, null)
+        socket = client.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { runOnUiThread { status.text = "متصل بالسيرفر" } }
+            override fun onMessage(webSocket: WebSocket, text: String) { runOnUiThread { handle(JSONObject(text)) } }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {}
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { runOnUiThread { status.text = "فشل الاتصال: ${t.message ?: "خطأ"}" } }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { runOnUiThread { status.text = "تم قطع الاتصال" } }
+        })
+    }
+
+    private fun handle(j: JSONObject) {
+        when (j.optString("type")) {
+            "hello" -> {
+                val m = JSONObject().put("type", "register").put("name", nameInput.text.toString().ifBlank { "Player" })
+                if (playerId.isNotBlank() && token.isNotBlank()) m.put("playerId", playerId).put("token", token)
+                send(m)
+            }
+            "session" -> {
+                val p = j.getJSONObject("player"); playerId = p.getString("playerId"); coins = p.optInt("coins")
+                token = j.getString("token")
+                getSharedPreferences("online", MODE_PRIVATE).edit().putString("playerId", playerId).putString("token", token).apply()
+                identity.text = "Player ID: $playerId   •   Coins: $coins"; status.text = "Online"
+            }
+            "room" -> {
+                val r = j.getJSONObject("room"); roomId = r.getString("roomId"); ownerId = r.getString("ownerId"); target = r.optInt("target", 101)
+                roomInput.setText(roomId); targetButton.text = target.toString()
+                status.text = "Room $roomId • ${r.getJSONArray("players").length()}/2 • انتظار اللاعب"
+            }
+            "gameState" -> {
+                roomId = j.getString("roomId"); target = j.optInt("target", 101)
+                gameView.update(j, playerId)
+                status.text = if (j.optString("turn") == playerId) "دورك • Room $roomId" else "دور الخصم • Room $roomId"
+            }
+            "roundFinished" -> {
+                val winner = j.optString("winnerId"); val points = j.optInt("points"); status.text = if (winner == playerId) "كسبت الجولة +$points" else "الخصم كسب الجولة +$points"
+            }
+            "matchFinished" -> {
+                val winner = j.optString("winnerId"); status.text = if (winner == playerId) "🏆 كسبت مباراة $target" else "انتهت المباراة - الخصم فاز"
+                if (winner == playerId) coins = j.optInt("coins", coins)
+                identity.text = "Player ID: $playerId   •   Coins: $coins"
+            }
+            "error" -> toast(errorText(j.optString("code")))
+        }
+    }
+
+    private fun errorText(code: String) = when(code) {
+        "ROOM_NOT_FOUND" -> "الروم غير موجود"
+        "ROOM_FULL" -> "الروم مكتمل"
+        "NEED_PLAYERS", "BAD_ROOM_STATE" -> "لازم يكون في لاعبين والروم جاهز"
+        "NOT_YOUR_TURN" -> "مش دورك"
+        "INVALID_TILE" -> "القطعة مش راكبة"
+        "PLAY_AVAILABLE" -> "عندك قطعة تقدر تلعبها"
+        "INSUFFICIENT_COINS" -> "الكوينز غير كافية"
+        else -> code
+    }
+
+    private fun createRoom() {
+        if (playerId.isBlank()) { toast("اتصل بالسيرفر الأول"); return }
+        send(JSONObject().put("type", "createRoom").put("target", target).put("stake", stakeInput.text.toString().toIntOrNull() ?: 0))
+    }
+    private fun joinRoom() {
+        roomId = roomInput.text.toString().trim().uppercase()
+        if (roomId.isBlank()) { toast("اكتب Room ID"); return }
+        send(JSONObject().put("type", "joinRoom").put("roomId", roomId))
+    }
+    private fun send(j: JSONObject) { socket?.send(j.toString()) }
+    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    inner class OnlineDominoView : View(this@MainActivity) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val player = mutableListOf<Tile>()
-        private val cpu = mutableListOf<Tile>()
-        private val boneyard = mutableListOf<Tile>()
+        private val text = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val hand = mutableListOf<Tile>()
         private val board = mutableListOf<Tile>()
         private val handRects = mutableListOf<RectF>()
-        private val handler = Handler(Looper.getMainLooper())
-        private val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 55)
-
-        private var left = -1
-        private var right = -1
-        private var playerTurn = true
-        private var message = "دورك"
-        private var selected = -1
-        private var playerCoins = 1250
-        private var cpuCoins = 980
-        private var playerScore = 0
-        private var cpuScore = 0
-        private var matchTarget = 101
-
         private val drawRect = RectF()
-        private val newRect = RectF()
-        private val modeRect = RectF()
+        private var myTurn = false
+        private var opponentCount = 0
+        private var boneyardCount = 0
+        private var myScore = 0
+        private var opponentScore = 0
+        private var selected = -1
 
-        init { newGame() }
-
-        override fun onDetachedFromWindow() {
-            super.onDetachedFromWindow()
-            tone.release()
+        fun update(j: JSONObject, me: String) {
+            hand.clear(); board.clear()
+            val h = j.optJSONArray("hand") ?: JSONArray(); for (i in 0 until h.length()) h.getJSONObject(i).let { hand += Tile(it.getInt("a"), it.getInt("b")) }
+            val b = j.optJSONArray("board") ?: JSONArray(); for (i in 0 until b.length()) b.getJSONObject(i).let { board += Tile(it.getInt("a"), it.getInt("b")) }
+            myTurn = j.optString("turn") == me; opponentCount = j.optInt("opponentCount"); boneyardCount = j.optInt("boneyardCount")
+            val scores = j.optJSONObject("scores") ?: JSONObject(); myScore = scores.optInt(me)
+            val keys = scores.keys(); while (keys.hasNext()) { val k = keys.next(); if (k != me) opponentScore = scores.optInt(k) }
+            selected = -1; invalidate()
         }
 
-        private fun newGame() {
-            val deck = mutableListOf<Tile>()
-            for (a in 0..6) for (b in a..6) deck += Tile(a, b)
-            Collections.shuffle(deck)
-            player.clear(); cpu.clear(); boneyard.clear(); board.clear()
-            repeat(7) {
-                player += deck.removeAt(0)
-                cpu += deck.removeAt(0)
-            }
-            boneyard += deck
-            left = -1; right = -1
-            playerTurn = true
-            selected = -1
-            message = "دورك - اختار قطعة"
-            invalidate()
+        override fun onDraw(c: Canvas) {
+            super.onDraw(c)
+            val bg = LinearGradient(0f, 0f, width.toFloat(), height.toFloat(), Color.rgb(7, 43, 34), Color.rgb(4, 22, 20), Shader.TileMode.CLAMP)
+            paint.shader = bg; c.drawRect(0f,0f,width.toFloat(),height.toFloat(),paint); paint.shader=null
+            val table = RectF(20f, 15f, width-20f, height-90f); paint.color=Color.rgb(21,92,66); c.drawRoundRect(table,38f,38f,paint)
+            text.color=Color.WHITE; text.textAlign=Paint.Align.CENTER; text.typeface=Typeface.DEFAULT_BOLD; text.textSize=22f
+            c.drawText("$opponentScore / $target     الخصم: $opponentCount قطع", width/2f, 38f, text)
+            drawBoard(c); drawHand(c)
+            drawRect.set(24f,height-70f,150f,height-18f); paint.color=Color.rgb(35,130,92); c.drawRoundRect(drawRect,20f,20f,paint)
+            text.textSize=16f; c.drawText("سحب • $boneyardCount", drawRect.centerX(),drawRect.centerY()+6f,text)
+            text.textSize=18f; c.drawText("نقاطك: $myScore / $target", width/2f,height-38f,text)
+            text.textAlign=Paint.Align.RIGHT; text.textSize=15f; c.drawText(if(myTurn) "دورك" else "دور الخصم", width-30f,height-38f,text)
         }
 
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            drawBackground(canvas)
-            drawTopHud(canvas)
-            drawTable(canvas)
-            drawCpuHand(canvas)
-            drawBoard(canvas)
-            drawPlayerHand(canvas)
-            drawBottomControls(canvas)
+        private fun drawBoard(c: Canvas) {
+            if(board.isEmpty()){ text.textAlign=Paint.Align.CENTER;text.textSize=18f;text.color=Color.argb(160,255,255,255);c.drawText("منتصف الطاولة للعب",width/2f,height/2f-20f,text);return }
+            val w=72f; val h=38f; val gap=5f; val per=maxOf(4,((width-160)/(w+gap)).toInt()); var index=0
+            val rows=(board.size+per-1)/per; val startY=height/2f-rows*(h+gap)/2f-20f
+            for(r in 0 until rows){ val n=minOf(per,board.size-index); var x=width/2f-(n*w+(n-1)*gap)/2f; repeat(n){ drawTile(c,board[index++],RectF(x,startY+r*(h+gap),x+w,startY+r*(h+gap)+h),true);x+=w+gap } }
         }
-
-        private fun drawBackground(canvas: Canvas) {
-            val shader = LinearGradient(0f, 0f, width.toFloat(), height.toFloat(), Color.rgb(10, 20, 28), Color.rgb(5, 12, 18), Shader.TileMode.CLAMP)
-            paint.shader = shader
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
-            paint.shader = null
+        private fun drawHand(c: Canvas) {
+            handRects.clear(); val w=54f; val h=86f; val gap=8f; val total=hand.size*w+(hand.size-1).coerceAtLeast(0)*gap; var x=width/2f-total/2f; val y=height-92f
+            hand.forEachIndexed { i,t -> val lift=if(i==selected) 12f else 0f; val r=RectF(x,y-lift,x+w,y+h-lift);handRects+=r;drawTile(c,t,r,false);x+=w+gap }
         }
-
-        private fun drawTopHud(canvas: Canvas) {
-            val pad = dp(18f)
-            val top = dp(12f)
-            drawAvatarChip(canvas, pad, top, "YOU", playerCoins, playerScore, true)
-            drawAvatarChip(canvas, width - dp(220f), top, "CPU", cpuCoins, cpuScore, false)
-
-            textPaint.textAlign = Paint.Align.CENTER
-            textPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            textPaint.textSize = sp(22f)
-            textPaint.color = Color.rgb(245, 210, 118)
-            canvas.drawText("DOMINO CLUB", width / 2f, top + dp(24f), textPaint)
-            textPaint.textSize = sp(13f)
-            textPaint.color = Color.argb(220, 240, 240, 240)
-            canvas.drawText("$message  •  هدف المباراة $matchTarget", width / 2f, top + dp(48f), textPaint)
+        private fun drawTile(c: Canvas,t:Tile,r:RectF,horizontal:Boolean){
+            paint.color=Color.rgb(244,239,220);paint.setShadowLayer(7f,1f,3f,Color.BLACK);setLayerType(LAYER_TYPE_SOFTWARE,paint);c.drawRoundRect(r,8f,8f,paint);paint.clearShadowLayer();paint.color=Color.DKGRAY
+            if(horizontal)c.drawLine(r.centerX(),r.top+4,r.centerX(),r.bottom-4,paint) else c.drawLine(r.left+4,r.centerY(),r.right-4,r.centerY(),paint)
+            text.color=Color.rgb(30,30,30);text.textAlign=Paint.Align.CENTER;text.typeface=Typeface.DEFAULT_BOLD;text.textSize=if(horizontal)18f else 23f
+            if(horizontal){c.drawText(t.a.toString(),r.left+r.width()/4,r.centerY()+6,text);c.drawText(t.b.toString(),r.right-r.width()/4,r.centerY()+6,text)} else {c.drawText(t.a.toString(),r.centerX(),r.top+r.height()/4+8,text);c.drawText(t.b.toString(),r.centerX(),r.bottom-r.height()/4+8,text)}
         }
-
-        private fun drawAvatarChip(canvas: Canvas, x: Float, y: Float, name: String, coins: Int, score: Int, playerSide: Boolean) {
-            val r = RectF(x, y, x + dp(200f), y + dp(56f))
-            paint.color = Color.argb(190, 20, 29, 38)
-            paint.setShadowLayer(dp(10f), 0f, dp(3f), Color.argb(120, 0, 0, 0))
-            setLayerType(LAYER_TYPE_SOFTWARE, paint)
-            canvas.drawRoundRect(r, dp(14f), dp(14f), paint)
-            paint.clearShadowLayer()
-
-            paint.color = if (playerSide) Color.rgb(40, 190, 132) else Color.rgb(210, 82, 82)
-            canvas.drawCircle(x + dp(28f), y + dp(28f), dp(18f), paint)
-            textPaint.textAlign = Paint.Align.CENTER
-            textPaint.typeface = Typeface.DEFAULT_BOLD
-            textPaint.textSize = sp(12f)
-            textPaint.color = Color.WHITE
-            canvas.drawText(name.take(1), x + dp(28f), y + dp(32f), textPaint)
-
-            textPaint.textAlign = Paint.Align.LEFT
-            textPaint.textSize = sp(13f)
-            canvas.drawText(name, x + dp(56f), y + dp(21f), textPaint)
-            textPaint.textSize = sp(11f)
-            textPaint.color = Color.rgb(245, 210, 118)
-            canvas.drawText("◉ $coins", x + dp(56f), y + dp(40f), textPaint)
-            textPaint.color = Color.LTGRAY
-            canvas.drawText("PTS $score", x + dp(125f), y + dp(40f), textPaint)
-        }
-
-        private fun drawTable(canvas: Canvas) {
-            val table = RectF(dp(20f), dp(78f), width - dp(20f), height - dp(118f))
-            paint.color = Color.rgb(64, 38, 24)
-            paint.setShadowLayer(dp(18f), 0f, dp(6f), Color.BLACK)
-            canvas.drawRoundRect(table, dp(34f), dp(34f), paint)
-            paint.clearShadowLayer()
-
-            val inner = RectF(table.left + dp(14f), table.top + dp(14f), table.right - dp(14f), table.bottom - dp(14f))
-            val felt = RadialGradient(inner.centerX(), inner.centerY(), inner.width() * .7f, Color.rgb(27, 112, 77), Color.rgb(10, 64, 48), Shader.TileMode.CLAMP)
-            paint.shader = felt
-            canvas.drawRoundRect(inner, dp(26f), dp(26f), paint)
-            paint.shader = null
-
-            paint.color = Color.argb(28, 255, 255, 255)
-            for (i in 0..22) {
-                val x = inner.left + (i * 71 % inner.width().toInt())
-                canvas.drawCircle(x, inner.top + ((i * 47) % inner.height().toInt()), dp(1.3f), paint)
-            }
-        }
-
-        private fun drawCpuHand(canvas: Canvas) {
-            val count = cpu.size
-            val w = dp(34f)
-            val gap = dp(7f)
-            val total = count * w + (count - 1).coerceAtLeast(0) * gap
-            var x = width / 2f - total / 2f
-            val y = dp(94f)
-            repeat(count) {
-                drawDominoBack(canvas, RectF(x, y, x + w, y + dp(58f)))
-                x += w + gap
-            }
-        }
-
-        private fun drawBoard(canvas: Canvas) {
-            if (board.isEmpty()) {
-                textPaint.textAlign = Paint.Align.CENTER
-                textPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                textPaint.textSize = sp(17f)
-                textPaint.color = Color.argb(170, 255, 255, 255)
-                canvas.drawText("ابدأ بأي قطعة", width / 2f, height / 2f, textPaint)
-                return
-            }
-
-            val tileW = dp(68f)
-            val tileH = dp(34f)
-            val gap = dp(5f)
-            val maxPerRow = maxOf(4, ((width - dp(120f)) / (tileW + gap)).toInt())
-            val rows = (board.size + maxPerRow - 1) / maxPerRow
-            var index = 0
-            val startY = height / 2f - (rows * (tileH + gap)) / 2f
-            repeat(rows) { row ->
-                val n = min(maxPerRow, board.size - index)
-                val rowWidth = n * tileW + (n - 1) * gap
-                var x = width / 2f - rowWidth / 2f
-                repeat(n) {
-                    drawDominoFace(canvas, board[index], RectF(x, startY + row * (tileH + gap), x + tileW, startY + row * (tileH + gap) + tileH), horizontal = true, glow = false)
-                    index++
-                    x += tileW + gap
-                }
-            }
-        }
-
-        private fun drawPlayerHand(canvas: Canvas) {
-            handRects.clear()
-            val tileW = dp(54f)
-            val tileH = dp(90f)
-            val gap = dp(9f)
-            val total = player.size * tileW + (player.size - 1).coerceAtLeast(0) * gap
-            var x = width / 2f - total / 2f
-            val baseY = height - dp(112f)
-            player.forEachIndexed { index, tile ->
-                val lift = if (selected == index) dp(13f) else 0f
-                val rect = RectF(x, baseY - lift, x + tileW, baseY + tileH - lift)
-                handRects += rect
-                drawDominoFace(canvas, tile, rect, horizontal = false, glow = playable(tile) && playerTurn)
-                x += tileW + gap
-            }
-        }
-
-        private fun drawBottomControls(canvas: Canvas) {
-            val y = height - dp(50f)
-            drawRect.set(dp(20f), y, dp(130f), y + dp(38f))
-            newRect.set(width - dp(142f), y, width - dp(20f), y + dp(38f))
-            modeRect.set(width / 2f - dp(74f), y, width / 2f + dp(74f), y + dp(38f))
-            drawPill(canvas, drawRect, "سحب • ${boneyard.size}", Color.rgb(31, 142, 96))
-            drawPill(canvas, modeRect, "$matchTarget POINTS", Color.rgb(38, 52, 68))
-            drawPill(canvas, newRect, "لعبة جديدة", Color.rgb(110, 68, 42))
-        }
-
-        private fun drawPill(canvas: Canvas, rect: RectF, label: String, color: Int) {
-            paint.color = color
-            paint.setShadowLayer(dp(7f), 0f, dp(2f), Color.argb(100, 0, 0, 0))
-            canvas.drawRoundRect(rect, dp(19f), dp(19f), paint)
-            paint.clearShadowLayer()
-            textPaint.textAlign = Paint.Align.CENTER
-            textPaint.typeface = Typeface.DEFAULT_BOLD
-            textPaint.textSize = sp(12f)
-            textPaint.color = Color.WHITE
-            canvas.drawText(label, rect.centerX(), rect.centerY() + dp(4f), textPaint)
-        }
-
-        private fun drawDominoBack(canvas: Canvas, r: RectF) {
-            paint.color = Color.rgb(22, 27, 32)
-            paint.setShadowLayer(dp(6f), dp(1f), dp(3f), Color.argb(130, 0, 0, 0))
-            canvas.drawRoundRect(r, dp(7f), dp(7f), paint)
-            paint.clearShadowLayer()
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(1.2f)
-            paint.color = Color.rgb(194, 151, 69)
-            canvas.drawRoundRect(RectF(r.left + dp(3f), r.top + dp(3f), r.right - dp(3f), r.bottom - dp(3f)), dp(5f), dp(5f), paint)
-            paint.style = Paint.Style.FILL
-        }
-
-        private fun drawDominoFace(canvas: Canvas, tile: Tile, r: RectF, horizontal: Boolean, glow: Boolean) {
-            if (glow) {
-                paint.color = Color.argb(85, 77, 230, 168)
-                paint.setShadowLayer(dp(13f), 0f, 0f, Color.rgb(72, 220, 155))
-                canvas.drawRoundRect(r, dp(8f), dp(8f), paint)
-                paint.clearShadowLayer()
-            }
-
-            paint.color = Color.rgb(246, 241, 224)
-            paint.setShadowLayer(dp(7f), dp(1f), dp(3f), Color.argb(150, 0, 0, 0))
-            canvas.drawRoundRect(r, dp(8f), dp(8f), paint)
-            paint.clearShadowLayer()
-            paint.color = Color.rgb(214, 205, 181)
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(1.2f)
-            canvas.drawRoundRect(r, dp(8f), dp(8f), paint)
-            paint.style = Paint.Style.FILL
-
-            paint.color = Color.rgb(70, 64, 55)
-            paint.strokeWidth = dp(1.2f)
-            if (horizontal) canvas.drawLine(r.centerX(), r.top + dp(4f), r.centerX(), r.bottom - dp(4f), paint)
-            else canvas.drawLine(r.left + dp(4f), r.centerY(), r.right - dp(4f), r.centerY(), paint)
-
-            if (horizontal) {
-                drawPips(canvas, tile.a, RectF(r.left, r.top, r.centerX(), r.bottom))
-                drawPips(canvas, tile.b, RectF(r.centerX(), r.top, r.right, r.bottom))
-            } else {
-                drawPips(canvas, tile.a, RectF(r.left, r.top, r.right, r.centerY()))
-                drawPips(canvas, tile.b, RectF(r.left, r.centerY(), r.right, r.bottom))
-            }
-        }
-
-        private fun drawPips(canvas: Canvas, value: Int, r: RectF) {
-            if (value == 0) return
-            val xs = floatArrayOf(r.left + r.width() * .27f, r.centerX(), r.right - r.width() * .27f)
-            val ys = floatArrayOf(r.top + r.height() * .25f, r.centerY(), r.bottom - r.height() * .25f)
-            val pts = when (value) {
-                1 -> listOf(1 to 1)
-                2 -> listOf(0 to 0, 2 to 2)
-                3 -> listOf(0 to 0, 1 to 1, 2 to 2)
-                4 -> listOf(0 to 0, 2 to 0, 0 to 2, 2 to 2)
-                5 -> listOf(0 to 0, 2 to 0, 1 to 1, 0 to 2, 2 to 2)
-                else -> listOf(0 to 0, 0 to 1, 0 to 2, 2 to 0, 2 to 1, 2 to 2)
-            }
-            paint.color = Color.rgb(37, 39, 42)
-            pts.forEach { (ix, iy) -> canvas.drawCircle(xs[ix], ys[iy], dp(2.6f), paint) }
-        }
-
-        override fun onTouchEvent(event: MotionEvent): Boolean {
-            if (event.action != MotionEvent.ACTION_UP) return true
-            val x = event.x; val y = event.y
-            if (drawRect.contains(x, y)) { drawForPlayer(); return true }
-            if (newRect.contains(x, y)) { tone.startTone(ToneGenerator.TONE_PROP_BEEP, 70); newGame(); return true }
-            if (modeRect.contains(x, y)) {
-                matchTarget = if (matchTarget == 101) 151 else 101
-                message = "نظام المباراة $matchTarget نقطة"
-                invalidate(); return true
-            }
-            handRects.forEachIndexed { index, rect ->
-                if (rect.contains(x, y)) {
-                    if (selected == index) playPlayer(index) else { selected = index; tone.startTone(ToneGenerator.TONE_PROP_ACK, 45); invalidate() }
-                    return true
-                }
-            }
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            if(e.action!=MotionEvent.ACTION_UP)return true
+            if(drawRect.contains(e.x,e.y)){ if(myTurn) send(JSONObject().put("type","drawTile").put("roomId",roomId)); return true }
+            handRects.forEachIndexed { i,r -> if(r.contains(e.x,e.y)){ if(!myTurn){toast("مش دورك");return true}; if(selected==i){ val t=hand[i]; send(JSONObject().put("type","playTile").put("roomId",roomId).put("side","right").put("tile",JSONObject().put("a",t.a).put("b",t.b))) } else {selected=i;invalidate()}; return true } }
             return true
         }
-
-        private fun playable(tile: Tile) = board.isEmpty() || tile.matches(left) || tile.matches(right)
-
-        private fun playPlayer(index: Int) {
-            if (!playerTurn || index !in player.indices) return
-            val tile = player[index]
-            if (!playable(tile)) {
-                message = "القطعة دي مش راكبة"
-                tone.startTone(ToneGenerator.TONE_PROP_NACK, 90)
-                Toast.makeText(activity, "اختار قطعة مناسبة", Toast.LENGTH_SHORT).show()
-                invalidate(); return
-            }
-            place(tile)
-            player.removeAt(index)
-            selected = -1
-            tone.startTone(ToneGenerator.TONE_PROP_ACK, 70)
-            if (player.isEmpty()) { finishRound(true); return }
-            playerTurn = false
-            message = "دور الخصم..."
-            invalidate()
-            handler.postDelayed({ cpuTurn() }, 650)
-        }
-
-        private fun place(tile: Tile) {
-            if (board.isEmpty()) {
-                board += tile; left = tile.a; right = tile.b
-            } else if (tile.matches(right)) {
-                board += tile; right = tile.other(right)
-            } else if (tile.matches(left)) {
-                board.add(0, tile); left = tile.other(left)
-            }
-        }
-
-        private fun drawForPlayer() {
-            if (!playerTurn) return
-            if (player.any(::playable)) {
-                message = "عندك قطعة قابلة للعب"
-                tone.startTone(ToneGenerator.TONE_PROP_NACK, 70)
-                invalidate(); return
-            }
-            if (boneyard.isNotEmpty()) {
-                player += boneyard.removeAt(0)
-                message = "سحبت قطعة"
-                tone.startTone(ToneGenerator.TONE_PROP_BEEP, 55)
-                invalidate()
-            } else {
-                playerTurn = false
-                message = "مفيش سحب - دور الخصم"
-                invalidate()
-                handler.postDelayed({ cpuTurn() }, 500)
-            }
-        }
-
-        private fun cpuTurn() {
-            var index = cpu.indexOfFirst(::playable)
-            while (index == -1 && boneyard.isNotEmpty()) {
-                cpu += boneyard.removeAt(0)
-                index = cpu.indexOfFirst(::playable)
-            }
-            if (index != -1) {
-                val tile = cpu.removeAt(index)
-                place(tile)
-                if (cpu.isEmpty()) { finishRound(false); return }
-            }
-            if (boneyard.isEmpty() && player.none(::playable) && cpu.none(::playable)) {
-                val p = player.sumOf { it.a + it.b }
-                val c = cpu.sumOf { it.a + it.b }
-                finishRound(p <= c)
-                return
-            }
-            playerTurn = true
-            message = "دورك - اختار قطعة"
-            invalidate()
-        }
-
-        private fun finishRound(playerWon: Boolean) {
-            playerTurn = false
-            val loserPips = if (playerWon) cpu.sumOf { it.a + it.b } else player.sumOf { it.a + it.b }
-            if (playerWon) {
-                playerScore += loserPips
-                playerCoins += 50
-                cpuCoins = (cpuCoins - 50).coerceAtLeast(0)
-                message = "كسبت الجولة +$loserPips نقطة  •  +50 كوين"
-                tone.startTone(ToneGenerator.TONE_PROP_PROMPT, 180)
-            } else {
-                cpuScore += loserPips
-                cpuCoins += 50
-                playerCoins = (playerCoins - 50).coerceAtLeast(0)
-                message = "الخصم كسب الجولة +$loserPips نقطة"
-                tone.startTone(ToneGenerator.TONE_PROP_NACK, 180)
-            }
-            val matchOver = playerScore >= matchTarget || cpuScore >= matchTarget
-            if (matchOver) {
-                message = if (playerScore >= matchTarget) "🏆 كسبت المباراة!" else "انتهت المباراة - الخصم فاز"
-            } else {
-                handler.postDelayed({ newGame() }, 1700)
-            }
-            invalidate()
-        }
-
-        private fun dp(v: Float) = v * resources.displayMetrics.density
-        private fun sp(v: Float) = v * resources.displayMetrics.scaledDensity
     }
+
+    override fun onDestroy() { socket?.close(1000, "bye"); client.dispatcher.executorService.shutdown(); super.onDestroy() }
 }
