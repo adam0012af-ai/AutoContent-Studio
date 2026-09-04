@@ -82,7 +82,7 @@ class PlayerActivity:AppCompatActivity(){
         val title=control(intent.getStringExtra("title")?:"Now Playing",18,true)
         top.addView(title,LinearLayout.LayoutParams(0,-2,1f))
         lock=control("LOCK",11,true).apply{gravity=Gravity.CENTER}
-        lock.setOnClickListener{locked=!locked;text=if(locked)"UNLOCK" else "LOCK";setControlsLocked()}
+        lock.setOnClickListener{locked=!locked;lock.text=if(locked)"UNLOCK" else "LOCK";setControlsLocked()}
         top.addView(lock,LinearLayout.LayoutParams(dp(90),dp(44)))
         controls.addView(top)
 
