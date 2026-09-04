@@ -11,8 +11,8 @@ android {
         applicationId = "com.adam.domino"
         minSdk = 23
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "2.1.0-online"
     }
 
     compileOptions {
@@ -24,4 +24,8 @@ android {
     buildTypes {
         release { isMinifyEnabled = false }
     }
+}
+
+dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
