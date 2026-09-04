@@ -20,10 +20,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
-        setContentView(DominoTableView())
+        setContentView(DominoTableView(this))
     }
 
-    inner class DominoTableView : View(this) {
+    class DominoTableView(private val activity: MainActivity) : View(activity) {
         data class Tile(val a: Int, val b: Int) {
             fun matches(v: Int) = a == v || b == v
             fun other(v: Int) = if (a == v) b else a
@@ -223,7 +223,7 @@ class MainActivity : Activity() {
             newRect.set(width - dp(142f), y, width - dp(20f), y + dp(38f))
             modeRect.set(width / 2f - dp(74f), y, width / 2f + dp(74f), y + dp(38f))
             drawPill(canvas, drawRect, "سحب • ${boneyard.size}", Color.rgb(31, 142, 96))
-            drawPill(canvas, modeRect, "101 POINTS", Color.rgb(38, 52, 68))
+            drawPill(canvas, modeRect, "$matchTarget POINTS", Color.rgb(38, 52, 68))
             drawPill(canvas, newRect, "لعبة جديدة", Color.rgb(110, 68, 42))
         }
 
@@ -326,7 +326,7 @@ class MainActivity : Activity() {
             if (!playable(tile)) {
                 message = "القطعة دي مش راكبة"
                 tone.startTone(ToneGenerator.TONE_PROP_NACK, 90)
-                Toast.makeText(this@MainActivity, "اختار قطعة مناسبة", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, "اختار قطعة مناسبة", Toast.LENGTH_SHORT).show()
                 invalidate(); return
             }
             place(tile)
